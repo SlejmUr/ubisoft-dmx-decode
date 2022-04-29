@@ -36,27 +36,36 @@ interface TLSPayload {
 
 const getTLSPayload = (wsPacket: any): TLSPayload[] | null => {
   const layers = wsPacket._source?.layers;
-  const data: string = layers?.data?.['data.data'];
   if (layers?.tls && 'Ignored Unknown Record' in layers.tls) {
     console.warn('Warning: Ignored Unknown Record');
     return null;
   }
-  if (!data) return null;
-  const frame = parseInt(layers.frame['frame.number'], 10);
+  if (layers?.tls) {
+    const tlsData = layers.tls['tls.record'];
+    const data: string = tlsData['tls.app_data'];
+    if (data === undefined) return null;
+  } else {
+    return null;
+  }
 
+  const frame = parseInt(layers.frame['frame.number'], 10);
+  console.warn(wsPacket._source?.layers?.ip['ip.dst_host'] + " " + wsPacket._source?.layers?.ip['ip.src_host']);
   let direction: 'Upstream' | 'Downstream' | null = null;
   if (wsPacket._source?.layers?.ip['ip.dst_host'] === DEMUX_HOST) {
+    console.warn('Upstream');
     direction = 'Upstream';
   }
   if (wsPacket._source?.layers?.ip['ip.src_host'] === DEMUX_HOST) {
+    console.warn('Downstream');
     direction = 'Downstream';
   }
   if (!direction) return null;
 
-  const dataKeys = Object.keys(layers).filter((key) => key.match(/data\d*/));
+  const dataKeys = Object.keys(layers).filter((key) => key.match(/tls\d*/));
+  //console.warn(dataKeys);
   const payloads = dataKeys
     .map((key) => {
-      const currentData = layers[key]?.['data.data'];
+      const currentData = layers[key]['tls.record']['tls.app_data'];
       if (!currentData) return null;
       return {
         frame,
@@ -65,36 +74,47 @@ const getTLSPayload = (wsPacket: any): TLSPayload[] | null => {
       };
     })
     .filter((p): p is TLSPayload => p !== null);
+  console.warn(payloads);
   return payloads;
 };
 
+// TODO SOLVE THIS PIECE OF SHIT
 const payloadJoiner = (payloads: TLSPayload[]): TLSPayload[] => {
   const joinedPayloads: TLSPayload[] = [];
   let currentPayload: Buffer | null = null;
   let currentPayloadLength: number | null = null;
   payloads.forEach((payload) => {
     const { data } = payload;
+    //console.warn(data);
+    console.warn("DL: " + data.length);
     if (currentPayload === null) {
+      console.warn(data);
       const length = data.readUInt32BE();
+      console.warn(length);
       const dataSeg = data.subarray(4);
-
-      if (dataSeg.length === length) {
+      console.warn(dataSeg.length);
+      if (dataSeg.length === currentPayloadLength) {
         joinedPayloads.push({ ...payload, data: dataSeg });
       } else {
         currentPayload = dataSeg;
-        currentPayloadLength = length;
+        currentPayloadLength = data.length;
       }
     } else {
       const dataSeg = Buffer.concat([currentPayload, data]);
+      //console.warn(dataSeg);
       if (dataSeg.length === currentPayloadLength) {
         joinedPayloads.push({ ...payload, data: dataSeg });
+        console.warn("IDK " + currentPayloadLength);
         currentPayload = null;
         currentPayloadLength = null;
+        console.warn("true");
       } else {
         currentPayload = dataSeg;
+        console.warn("IDK2 " + currentPayloadLength);
       }
     }
   });
+  console.warn(joinedPayloads);
   return joinedPayloads;
 };
 
@@ -102,6 +122,8 @@ const decodeRequests = (payloads: TLSPayload[]): any[] => {
   const openServiceRequests = new Map<number, string>();
   const openConnectionRequests = new Map<number, string>();
   const openConnections = new Map<number, string>();
+  return [];
+  // TODO SOLVE THIS , BUT PROBABLY IF THE TLS PAYLOAD WILL BE GOOD THIS IS CAN BE IGNORED
   const decodedDemux = payloads.map((payload) => {
     const schema = demuxSchema.lookupType(payload.direction);
     const body = schema.decode(payload.data) as
@@ -179,11 +201,16 @@ const main = () => {
     .flat();
   console.log(`${payloads.length} payloads found`);
   const joinedPayloads = payloadJoiner(payloads);
+  outputJSONSync('tls-payloads_.json', payloads, { spaces: 2 }); //THIS ACTUALLY GIVE BACK SOMETHING!!
   outputJSONSync('tls-payloads.json', joinedPayloads, { spaces: 2 });
-
   const decodedDemuxes = decodeRequests(joinedPayloads);
+  const decodedDemuxes2 = decodeRequests(payloads);
   console.log(`Generated ${decodedDemuxes.length} responses`);
+  console.log(`Generated ${decodedDemuxes2.length} responses`);
   outputJSONSync('decodes.json', decodedDemuxes, {
+    spaces: 2,
+  });
+    outputJSONSync('decodes2.json', decodedDemuxes2, {
     spaces: 2,
   });
 };
